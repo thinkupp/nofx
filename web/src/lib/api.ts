@@ -11,6 +11,9 @@ import type {
   UpdateModelConfigRequest,
   UpdateExchangeConfigRequest,
   CompetitionData,
+  LLMCallsResponse,
+  LLMCallRecord,
+  LLMCallStats,
 } from '../types'
 import { CryptoService } from './crypto'
 import { httpClient } from './httpClient'
@@ -366,6 +369,49 @@ export const api = {
   }> {
     const res = await httpClient.get(`${API_BASE}/server-ip`, getAuthHeaders())
     if (!res.ok) throw new Error('获取服务器IP失败')
+    return res.json()
+  },
+
+  // LLM调用记录接口
+  async getLLMCalls(params: {
+    page?: number
+    page_size?: number
+    trader_id?: string
+    status?: string
+    model_provider?: string
+  }): Promise<LLMCallsResponse> {
+    const query = new URLSearchParams()
+    if (params.page) query.append('page', params.page.toString())
+    if (params.page_size) query.append('page_size', params.page_size.toString())
+    if (params.trader_id) query.append('trader_id', params.trader_id)
+    if (params.status) query.append('status', params.status)
+    if (params.model_provider)
+      query.append('model_provider', params.model_provider)
+
+    const res = await httpClient.get(
+      `${API_BASE}/llm-calls?${query}`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取LLM调用记录失败')
+    return res.json()
+  },
+
+  async getLLMCallById(id: number): Promise<LLMCallRecord> {
+    const res = await httpClient.get(
+      `${API_BASE}/llm-calls/${id}`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取LLM调用记录详情失败')
+    return res.json()
+  },
+
+  async getLLMCallStats(trader_id?: string): Promise<LLMCallStats> {
+    const query = trader_id ? `?trader_id=${trader_id}` : ''
+    const res = await httpClient.get(
+      `${API_BASE}/llm-calls/stats${query}`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取LLM调用统计失败')
     return res.json()
   },
 }
