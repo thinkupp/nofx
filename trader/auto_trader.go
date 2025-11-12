@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	cfg "nofx/config"
 	"nofx/decision"
 	"nofx/logger"
 	"nofx/market"
@@ -148,6 +149,41 @@ func NewAutoTrader(config AutoTraderConfig, database interface{}, userID string)
 			log.Printf("🤖 [%s] 使用DeepSeek AI (自定义URL: %s, 模型: %s)", config.Name, config.CustomAPIURL, config.CustomModelName)
 		} else {
 			log.Printf("🤖 [%s] 使用DeepSeek AI", config.Name)
+		}
+	}
+
+	// 设置 LLM 调用记录回调
+	mcpClient.TraderID = config.ID
+	mcpClient.UserID = userID
+	mcpClient.CallLogger = func(record *mcp.LLMCallInfo) {
+		// 保存到数据库
+		if db, ok := database.(interface {
+			CreateLLMCall(*cfg.LLMCallRecord) error
+		}); ok {
+			llmRecord := &cfg.LLMCallRecord{
+				TraderID:        record.TraderID,
+				UserID:          record.UserID,
+				ModelProvider:   record.ModelProvider,
+				ModelName:       record.ModelName,
+				RequestTime:     record.RequestTime,
+				ResponseTime:    record.ResponseTime,
+				DurationMs:      record.DurationMs,
+				InputTokens:     record.InputTokens,
+				OutputTokens:    record.OutputTokens,
+				TotalTokens:     record.TotalTokens,
+				SystemPrompt:    record.SystemPrompt,
+				UserPrompt:      record.UserPrompt,
+				ResponseContent: record.ResponseContent,
+				ErrorMessage:    record.ErrorMessage,
+				Status:          record.Status,
+				CreatedAt:       time.Now(),
+			}
+			if err := db.CreateLLMCall(llmRecord); err != nil {
+				log.Printf("⚠️  [%s] 保存LLM调用记录失败: %v", config.Name, err)
+			} else {
+				log.Printf("✅ [%s] LLM调用记录已保存 (状态: %s, 耗时: %dms, tokens: %d)",
+					config.Name, record.Status, record.DurationMs, record.TotalTokens)
+			}
 		}
 	}
 
