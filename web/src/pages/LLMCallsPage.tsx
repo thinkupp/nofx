@@ -2,7 +2,7 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { api } from '../lib/api'
 import type { LLMCallRecord } from '../types'
-import { Brain, CheckCircle, XCircle, Clock, TrendingUp, Activity } from 'lucide-react'
+import { Brain, CheckCircle, XCircle, Clock, TrendingUp, Activity, Copy, RefreshCw, ChevronDown, ChevronUp, Check } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 
@@ -14,6 +14,24 @@ export function LLMCallsPage() {
   const [selectedRecord, setSelectedRecord] = useState<LLMCallRecord | null>(
     null
   )
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  const [pendingRecordId, setPendingRecordId] = useState<number | null>(null)
+  const [expandedSections, setExpandedSections] = useState<{[key: string]: boolean}>({
+    system: false,
+    user: false,
+    response: false,
+    error: false
+  })
+  const [copiedSection, setCopiedSection] = useState<string | null>(null)
+
+  // 切换展开/折叠
+  const toggleSection = (section: string) => {
+    setExpandedSections(prev => ({
+      ...prev,
+      [section]: !prev[section]
+    }))
+  }
 
   // 获取记录列表
   const { data, error, isLoading } = useSWR(
@@ -47,14 +65,59 @@ export function LLMCallsPage() {
     return `${(ms / 1000).toFixed(2)}s`
   }
 
+  // 复制到剪贴板
+  const copyToClipboard = async (text: string, section: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedSection(section)
+      setTimeout(() => setCopiedSection(null), 2000)
+    } catch (err) {
+      console.error('复制失败:', err)
+    }
+  }
+
+  // 加载详情
+  const loadDetail = async (recordId: number) => {
+    setLoadingDetail(true)
+    setDetailError(null)
+    try {
+      // 调用详情接口获取完整数据（包含 system_prompt, user_prompt, response_content）
+      const fullRecord = await api.getLLMCallDetail(recordId)
+      setSelectedRecord(fullRecord)
+      setPendingRecordId(null)
+    } catch (err) {
+      console.error('获取详情失败:', err)
+      setDetailError(err instanceof Error ? err.message : '加载失败')
+      setPendingRecordId(recordId)
+    } finally {
+      setLoadingDetail(false)
+    }
+  }
+
   // 显示详情弹窗
-  const showDetail = (record: LLMCallRecord) => {
-    setSelectedRecord(record)
+  const showDetail = async (record: LLMCallRecord) => {
+    loadDetail(record.id)
+  }
+
+  // 重试加载详情
+  const retryLoadDetail = () => {
+    if (pendingRecordId !== null) {
+      loadDetail(pendingRecordId)
+    }
   }
 
   // 关闭详情弹窗
   const closeDetail = () => {
     setSelectedRecord(null)
+    setDetailError(null)
+    setPendingRecordId(null)
+    // 重置折叠状态
+    setExpandedSections({
+      system: false,
+      user: false,
+      response: false,
+      error: false
+    })
   }
 
   // 获取状态图标
@@ -74,23 +137,25 @@ export function LLMCallsPage() {
   return (
     <div className="space-y-5 animate-fade-in">
       {/* 头部 */}
-      <div className="flex items-center gap-4">
-        <div
-          className="w-12 h-12 rounded-xl flex items-center justify-center"
-          style={{
-            background: 'linear-gradient(135deg, #F0B90B 0%, #FCD535 100%)',
-            boxShadow: '0 4px 14px rgba(240, 185, 11, 0.4)',
-          }}
-        >
-          <Brain className="w-7 h-7" style={{ color: '#000' }} />
-        </div>
-        <div>
-          <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
-            模型用量
-          </h1>
-          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-            查看AI模型的调用历史和性能统计
-          </p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div
+            className="w-12 h-12 rounded-xl flex items-center justify-center"
+            style={{
+              background: 'linear-gradient(135deg, #F0B90B 0%, #FCD535 100%)',
+              boxShadow: '0 4px 14px rgba(240, 185, 11, 0.4)',
+            }}
+          >
+            <Brain className="w-7 h-7" style={{ color: '#000' }} />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
+              模型用量
+            </h1>
+            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+              查看AI模型的调用历史和性能统计
+            </p>
+          </div>
         </div>
       </div>
 
@@ -404,199 +469,307 @@ export function LLMCallsPage() {
       </div>
 
       {/* 详情弹窗 */}
-      {selectedRecord && (
+      {(selectedRecord || loadingDetail || detailError) && (
         <div
           className="fixed inset-0 flex items-center justify-center z-50 p-4"
           style={{ background: 'rgba(0, 0, 0, 0.85)' }}
           onClick={closeDetail}
         >
           <div
-            className="binance-card max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+            className="binance-card max-w-6xl w-full h-[90vh] flex flex-col"
             style={{ background: 'var(--panel-bg)' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-6">
-              {/* 标题 */}
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
+            {loadingDetail ? (
+              <div className="p-12 text-center">
+                <div
+                  className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-transparent mb-4"
+                  style={{
+                    borderTopColor: 'var(--brand-yellow)',
+                    borderRightColor: 'var(--brand-yellow)',
+                  }}
+                ></div>
+                <p style={{ color: 'var(--text-secondary)' }}>加载详情中...</p>
+              </div>
+            ) : detailError ? (
+              <div className="p-12 text-center">
+                <XCircle className="w-16 h-16 mx-auto mb-4" style={{ color: 'var(--binance-red)' }} />
+                <p className="text-lg mb-4" style={{ color: 'var(--binance-red)' }}>{detailError}</p>
+                <div className="flex gap-3 justify-center">
+                  <button
+                    onClick={retryLoadDetail}
+                    className="px-6 py-2 font-medium rounded-lg transition-all hover:opacity-80 flex items-center gap-2"
+                    style={{
+                      background: 'var(--brand-yellow)',
+                      color: '#000',
+                    }}
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    重试
+                  </button>
+                  <button
+                    onClick={closeDetail}
+                    className="px-6 py-2 font-medium rounded-lg transition-all hover:opacity-80"
+                    style={{
+                      background: 'var(--background)',
+                      border: '1px solid var(--panel-border)',
+                      color: 'var(--text-primary)',
+                    }}
+                  >
+                    关闭
+                  </button>
+                </div>
+              </div>
+            ) : selectedRecord ? (
+            <div className="flex flex-col h-full">
+              {/* 头部固定区域 */}
+              <div className="px-6 pt-6 pb-4 border-b flex items-center justify-between" style={{ borderColor: 'var(--panel-border)' }}>
+                <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
                   调用详情
                 </h2>
                 <button
                   onClick={closeDetail}
-                  className="text-3xl transition-opacity hover:opacity-70"
+                  className="w-8 h-8 flex items-center justify-center rounded-lg transition-all hover:bg-[var(--background)]"
                   style={{ color: 'var(--text-secondary)' }}
                 >
-                  ×
+                  <span className="text-2xl">×</span>
                 </button>
               </div>
 
-              {/* 基本信息 */}
-              <div className="grid grid-cols-2 gap-4 mb-6">
-                <div>
-                  <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
-                    状态
-                  </p>
-                  <div className="flex items-center gap-2">
-                    {getStatusIcon(selectedRecord.status)}
-                    <span
-                      className="font-semibold"
-                      style={{ color: getStatusColor(selectedRecord.status) }}
-                    >
-                      {selectedRecord.status === 'success' ? '成功' : '失败'}
-                    </span>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
-                    模型提供商
-                  </p>
-                  <p className="font-medium" style={{ color: 'var(--text-primary)' }}>
-                    {selectedRecord.model_provider}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
-                    模型名称
-                  </p>
-                  <p className="font-medium" style={{ color: 'var(--text-primary)' }}>
-                    {selectedRecord.model_name}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
-                    耗时
-                  </p>
-                  <p className="font-medium mono" style={{ color: 'var(--text-primary)' }}>
-                    {formatDuration(selectedRecord.duration_ms)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
-                    输入Token
-                  </p>
-                  <p className="font-medium mono" style={{ color: 'var(--text-primary)' }}>
-                    {selectedRecord.input_tokens.toLocaleString()}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
-                    输出Token
-                  </p>
-                  <p className="font-medium mono" style={{ color: 'var(--text-primary)' }}>
-                    {selectedRecord.output_tokens.toLocaleString()}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
-                    总Token
-                  </p>
-                  <p className="font-medium mono" style={{ color: 'var(--text-primary)' }}>
-                    {selectedRecord.total_tokens.toLocaleString()}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
-                    请求时间
-                  </p>
-                  <p className="font-medium" style={{ color: 'var(--text-primary)' }}>
-                    {new Date(selectedRecord.request_time).toLocaleString('zh-CN')}
-                  </p>
+              {/* 对话内容区域 - 聊天流式布局 */}
+              <div className="flex-1 overflow-y-auto px-6 py-4" style={{ background: 'var(--background)' }}>
+                <div className="space-y-4">
+                  {/* System Prompt */}
+                  {selectedRecord.system_prompt && (() => {
+                    const lines = selectedRecord.system_prompt.split('\n').length
+                    const isLong = lines > 5
+                    return (
+                      <div className="rounded-xl" style={{ background: 'var(--panel-bg)', border: '1px solid var(--panel-border)' }}>
+                        <div className="p-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: 'rgba(99, 102, 241, 0.1)' }}>
+                                <span className="text-xs">🤖</span>
+                              </div>
+                              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                系统提示词
+                              </span>
+                              <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'rgba(99, 102, 241, 0.1)', color: 'rgb(99, 102, 241)' }}>
+                                System
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => copyToClipboard(selectedRecord.system_prompt, 'system')}
+                              className="p-1.5 rounded-lg transition-all hover:bg-[var(--background)]"
+                              style={{ color: copiedSection === 'system' ? 'var(--binance-green)' : 'var(--text-secondary)' }}
+                            >
+                              {copiedSection === 'system' ? (
+                                <Check className="w-3.5 h-3.5" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                          <div className="p-3 rounded-lg" style={{ background: 'var(--background)' }}>
+                            <pre className={`text-xs whitespace-pre-wrap leading-relaxed ${!expandedSections.system && isLong ? 'line-clamp-5' : ''}`} style={{ color: 'var(--text-primary)' }}>
+                              {selectedRecord.system_prompt}
+                            </pre>
+                          </div>
+                          {isLong && (
+                            <button
+                              onClick={() => toggleSection('system')}
+                              className="mt-2 text-xs flex items-center gap-1 hover:opacity-70 transition-opacity"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              {expandedSections.system ? (
+                                <>收起 <ChevronUp className="w-3 h-3" /></>
+                              ) : (
+                                <>展开 <ChevronDown className="w-3 h-3" /></>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* User Prompt */}
+                  {selectedRecord.user_prompt && (() => {
+                    const lines = selectedRecord.user_prompt.split('\n').length
+                    const isLong = lines > 5
+                    return (
+                      <div className="rounded-xl" style={{ background: 'var(--panel-bg)', border: '1px solid var(--panel-border)' }}>
+                        <div className="p-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: 'rgba(34, 197, 94, 0.1)' }}>
+                                <span className="text-xs">👤</span>
+                              </div>
+                              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                用户输入
+                              </span>
+                              <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'rgba(34, 197, 94, 0.1)', color: 'rgb(34, 197, 94)' }}>
+                                User
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => copyToClipboard(selectedRecord.user_prompt, 'user')}
+                              className="p-1.5 rounded-lg transition-all hover:bg-[var(--background)]"
+                              style={{ color: copiedSection === 'user' ? 'var(--binance-green)' : 'var(--text-secondary)' }}
+                            >
+                              {copiedSection === 'user' ? (
+                                <Check className="w-3.5 h-3.5" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                          <div className="p-3 rounded-lg" style={{ background: 'var(--background)' }}>
+                            <pre className={`text-xs whitespace-pre-wrap leading-relaxed ${!expandedSections.user && isLong ? 'line-clamp-5' : ''}`} style={{ color: 'var(--text-primary)' }}>
+                              {selectedRecord.user_prompt}
+                            </pre>
+                          </div>
+                          {isLong && (
+                            <button
+                              onClick={() => toggleSection('user')}
+                              className="mt-2 text-xs flex items-center gap-1 hover:opacity-70 transition-opacity"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              {expandedSections.user ? (
+                                <>收起 <ChevronUp className="w-3 h-3" /></>
+                              ) : (
+                                <>展开 <ChevronDown className="w-3 h-3" /></>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* AI响应内容 */}
+                  {selectedRecord.status === 'success' && selectedRecord.response_content && (() => {
+                    const lines = selectedRecord.response_content.split('\n').length
+                    const isLong = lines > 5
+                    return (
+                      <div className="rounded-xl" style={{ background: 'var(--panel-bg)', border: '1px solid var(--panel-border)' }}>
+                        <div className="p-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: 'rgba(240, 185, 11, 0.1)' }}>
+                                <span className="text-xs">✨</span>
+                              </div>
+                              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                AI 响应
+                              </span>
+                              <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'rgba(240, 185, 11, 0.1)', color: 'var(--brand-yellow)' }}>
+                                Assistant
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => copyToClipboard(selectedRecord.response_content, 'response')}
+                              className="p-1.5 rounded-lg transition-all hover:bg-[var(--background)]"
+                              style={{ color: copiedSection === 'response' ? 'var(--binance-green)' : 'var(--text-secondary)' }}
+                            >
+                              {copiedSection === 'response' ? (
+                                <Check className="w-3.5 h-3.5" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                          <div className="p-3 rounded-lg" style={{ background: 'var(--background)' }}>
+                            <pre className={`text-xs whitespace-pre-wrap leading-relaxed ${!expandedSections.response && isLong ? 'line-clamp-5' : ''}`} style={{ color: 'var(--text-primary)' }}>
+                              {selectedRecord.response_content}
+                            </pre>
+                          </div>
+                          {isLong && (
+                            <button
+                              onClick={() => toggleSection('response')}
+                              className="mt-2 text-xs flex items-center gap-1 hover:opacity-70 transition-opacity"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              {expandedSections.response ? (
+                                <>收起 <ChevronUp className="w-3 h-3" /></>
+                              ) : (
+                                <>展开 <ChevronDown className="w-3 h-3" /></>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* 错误信息 */}
+                  {selectedRecord.status === 'failed' && (() => {
+                    const lines = selectedRecord.error_message ? selectedRecord.error_message.split('\n').length : 0
+                    const isLong = lines > 5
+                    return (
+                      <div className="rounded-xl" style={{ background: 'var(--panel-bg)', border: '1px solid rgba(246, 70, 93, 0.3)' }}>
+                        <div className="p-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: 'rgba(246, 70, 93, 0.1)' }}>
+                                <span className="text-xs">⚠️</span>
+                              </div>
+                              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                错误信息
+                              </span>
+                              <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'rgba(246, 70, 93, 0.1)', color: 'var(--binance-red)' }}>
+                                Error
+                              </span>
+                            </div>
+                            {selectedRecord.error_message && (
+                              <button
+                                onClick={() => copyToClipboard(selectedRecord.error_message, 'error')}
+                                className="p-1.5 rounded-lg transition-all hover:bg-[var(--background)]"
+                                style={{ color: copiedSection === 'error' ? 'var(--binance-green)' : 'var(--text-secondary)' }}
+                              >
+                                {copiedSection === 'error' ? (
+                                  <Check className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+                          </div>
+                          <div className="p-3 rounded-lg" style={{ background: 'rgba(246, 70, 93, 0.05)' }}>
+                            {selectedRecord.error_message ? (
+                              <pre className={`text-xs whitespace-pre-wrap leading-relaxed ${!expandedSections.error && isLong ? 'line-clamp-5' : ''}`} style={{ color: 'var(--binance-red)' }}>
+                                {selectedRecord.error_message}
+                              </pre>
+                            ) : (
+                              <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                                未记录错误详情
+                              </p>
+                            )}
+                          </div>
+                          {isLong && (
+                            <button
+                              onClick={() => toggleSection('error')}
+                              className="mt-2 text-xs flex items-center gap-1 hover:opacity-70 transition-opacity"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              {expandedSections.error ? (
+                                <>收起 <ChevronUp className="w-3 h-3" /></>
+                              ) : (
+                                <>展开 <ChevronDown className="w-3 h-3" /></>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })()}
                 </div>
               </div>
 
-              {/* System Prompt */}
-              {selectedRecord.system_prompt && (
-                <div className="mb-6">
-                  <p
-                    className="text-sm font-medium mb-2"
-                    style={{ color: 'var(--text-secondary)' }}
-                  >
-                    System Prompt
-                  </p>
-                  <pre
-                    className="p-4 rounded-lg text-sm whitespace-pre-wrap overflow-x-auto"
-                    style={{
-                      background: 'var(--background)',
-                      border: '1px solid var(--panel-border)',
-                      color: 'var(--text-primary)',
-                    }}
-                  >
-                    {selectedRecord.system_prompt}
-                  </pre>
-                </div>
-              )}
-
-              {/* User Prompt */}
-              {selectedRecord.user_prompt && (
-                <div className="mb-6">
-                  <p
-                    className="text-sm font-medium mb-2"
-                    style={{ color: 'var(--text-secondary)' }}
-                  >
-                    User Prompt
-                  </p>
-                  <pre
-                    className="p-4 rounded-lg text-sm whitespace-pre-wrap overflow-x-auto"
-                    style={{
-                      background: 'var(--background)',
-                      border: '1px solid var(--panel-border)',
-                      color: 'var(--text-primary)',
-                    }}
-                  >
-                    {selectedRecord.user_prompt}
-                  </pre>
-                </div>
-              )}
-
-              {/* 响应内容 */}
-              {selectedRecord.response_content && (
-                <div className="mb-6">
-                  <p
-                    className="text-sm font-medium mb-2"
-                    style={{ color: 'var(--text-secondary)' }}
-                  >
-                    响应内容
-                  </p>
-                  <pre
-                    className="p-4 rounded-lg text-sm whitespace-pre-wrap overflow-x-auto"
-                    style={{
-                      background: 'var(--background)',
-                      border: '1px solid var(--panel-border)',
-                      color: 'var(--text-primary)',
-                    }}
-                  >
-                    {selectedRecord.response_content}
-                  </pre>
-                </div>
-              )}
-
-              {/* 错误信息 */}
-              {selectedRecord.error_message && (
-                <div className="mb-6">
-                  <p
-                    className="text-sm font-medium mb-2"
-                    style={{ color: 'var(--binance-red)' }}
-                  >
-                    错误信息
-                  </p>
-                  <pre
-                    className="p-4 rounded-lg text-sm whitespace-pre-wrap overflow-x-auto"
-                    style={{
-                      background: 'var(--binance-red-bg)',
-                      border: '1px solid var(--binance-red-border)',
-                      color: 'var(--binance-red)',
-                    }}
-                  >
-                    {selectedRecord.error_message}
-                  </pre>
-                </div>
-              )}
-
-              {/* 关闭按钮 */}
-              <div className="flex justify-end">
+              {/* 底部固定按钮 */}
+              <div className="px-6 py-4 border-t" style={{ borderColor: 'var(--panel-border)' }}>
                 <button
                   onClick={closeDetail}
-                  className="px-6 py-2 font-medium rounded-lg transition-all hover:opacity-80"
+                  className="w-full px-6 py-2 font-medium rounded-lg transition-all hover:opacity-80"
                   style={{
                     background: 'var(--background)',
                     border: '1px solid var(--panel-border)',
@@ -607,6 +780,7 @@ export function LLMCallsPage() {
                 </button>
               </div>
             </div>
+            ) : null}
           </div>
         </div>
       )}

@@ -422,4 +422,14 @@ export const api = {
     if (!res.ok) throw new Error('获取LLM调用统计失败')
     return res.json()
   },
+
+  // 获取单条LLM调用记录详情
+  async getLLMCallDetail(id: number): Promise<LLMCallRecord> {
+    const res = await httpClient.get(
+      `${API_BASE}/llm-calls/${id}`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取LLM调用记录详情失败')
+    return res.json()
+  },
 }
