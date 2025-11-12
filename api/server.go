@@ -968,16 +968,20 @@ func (s *Server) handleSyncBalance(c *gin.Context) {
 		return
 	}
 
-	// 提取可用余额
+	// 提取钱包总余额（totalWalletBalance）作为初始余额基准
+	// 注意：应使用钱包余额而非可用余额，因为可用余额会因持仓保证金占用而大幅减少
 	var actualBalance float64
-	if availableBalance, ok := balanceInfo["available_balance"].(float64); ok && availableBalance > 0 {
-		actualBalance = availableBalance
-	} else if availableBalance, ok := balanceInfo["availableBalance"].(float64); ok && availableBalance > 0 {
-		actualBalance = availableBalance
+	if walletBalance, ok := balanceInfo["totalWalletBalance"].(float64); ok && walletBalance > 0 {
+		// 优先使用钱包总余额（币安期货）
+		actualBalance = walletBalance
+	} else if walletBalance, ok := balanceInfo["wallet_balance"].(float64); ok && walletBalance > 0 {
+		// 或者 wallet_balance 字段
+		actualBalance = walletBalance
 	} else if totalBalance, ok := balanceInfo["balance"].(float64); ok && totalBalance > 0 {
+		// 兜底：使用 balance 字段
 		actualBalance = totalBalance
 	} else {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法获取可用余额"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法获取钱包余额（totalWalletBalance）"})
 		return
 	}
 
