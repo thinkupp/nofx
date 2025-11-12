@@ -205,3 +205,45 @@ export interface TraderConfigData {
   scan_interval_minutes: number
   is_running: boolean
 }
+
+// LLM调用记录
+export interface LLMCallRecord {
+  id: number
+  trader_id: string
+  user_id: string
+  model_provider: string
+  model_name: string
+  request_time: string
+  response_time: string
+  duration_ms: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  system_prompt: string
+  user_prompt: string
+  response_content: string
+  error_message: string
+  status: string
+  created_at: string
+}
+
+// LLM调用记录列表响应
+export interface LLMCallsResponse {
+  records: LLMCallRecord[]
+  total: number
+  page: number
+  page_size: number
+}
+
+// LLM调用统计
+export interface LLMCallStats {
+  total_calls: number
+  success_calls: number
+  failed_calls: number
+  total_tokens: number
+  input_tokens: number
+  output_tokens: number
+  avg_duration_ms: number
+  by_provider: Record<string, number>
+  by_model: Record<string, number>
+}

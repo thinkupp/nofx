@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import useSWR from 'swr'
 import { api } from '../lib/api'
 import type { LLMCallRecord } from '../types'
@@ -291,7 +291,7 @@ export function LLMCallsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.records.map((record, index) => (
+                  {data.records.map((record: LLMCallRecord, index: number) => (
                     <tr
                       key={record.id}
                       className="cursor-pointer transition-colors"
