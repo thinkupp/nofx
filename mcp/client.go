@@ -22,6 +22,28 @@ const (
 	ProviderCustom   Provider = "custom"
 )
 
+// LLMCallLogger LLM调用记录回调函数
+type LLMCallLogger func(record *LLMCallInfo)
+
+// LLMCallInfo LLM调用信息
+type LLMCallInfo struct {
+	TraderID        string
+	UserID          string
+	ModelProvider   string
+	ModelName       string
+	RequestTime     time.Time
+	ResponseTime    time.Time
+	DurationMs      int64
+	InputTokens     int
+	OutputTokens    int
+	TotalTokens     int
+	SystemPrompt    string
+	UserPrompt      string
+	ResponseContent string
+	ErrorMessage    string
+	Status          string
+}
+
 // Client AI API配置
 type Client struct {
 	Provider   Provider
@@ -31,6 +53,10 @@ type Client struct {
 	Timeout    time.Duration
 	UseFullURL bool // 是否使用完整URL（不添加/chat/completions）
 	MaxTokens  int  // AI响应的最大token数
+	// LLM调用记录回调
+	TraderID  string         // 当前trader ID
+	UserID    string         // 当前user ID
+	CallLogger LLMCallLogger  // 调用记录回调函数
 }
 
 func New() *Client {
@@ -173,6 +199,9 @@ func (client *Client) CallWithMessages(systemPrompt, userPrompt string) (string,
 
 // callOnce 单次调用AI API（内部使用）
 func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) {
+	// 记录请求开始时间
+	requestTime := time.Now()
+
 	// 打印当前 AI 配置
 	log.Printf("📡 [MCP] AI 请求配置:")
 	log.Printf("   Provider: %s", client.Provider)
@@ -250,6 +279,22 @@ func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) 
 	httpClient := &http.Client{Timeout: client.Timeout}
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		// 记录失败的调用
+		if client.CallLogger != nil {
+			client.CallLogger(&LLMCallInfo{
+				TraderID:      client.TraderID,
+				UserID:        client.UserID,
+				ModelProvider: string(client.Provider),
+				ModelName:     client.Model,
+				RequestTime:   requestTime,
+				ResponseTime:  time.Now(),
+				DurationMs:    time.Since(requestTime).Milliseconds(),
+				SystemPrompt:  systemPrompt,
+				UserPrompt:    userPrompt,
+				ErrorMessage:  fmt.Sprintf("发送请求失败: %v", err),
+				Status:        "failed",
+			})
+		}
 		return "", fmt.Errorf("发送请求失败: %w", err)
 	}
 	defer resp.Body.Close()
@@ -257,10 +302,42 @@ func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) 
 	// 读取响应
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		// 记录失败的调用
+		if client.CallLogger != nil {
+			client.CallLogger(&LLMCallInfo{
+				TraderID:      client.TraderID,
+				UserID:        client.UserID,
+				ModelProvider: string(client.Provider),
+				ModelName:     client.Model,
+				RequestTime:   requestTime,
+				ResponseTime:  time.Now(),
+				DurationMs:    time.Since(requestTime).Milliseconds(),
+				SystemPrompt:  systemPrompt,
+				UserPrompt:    userPrompt,
+				ErrorMessage:  fmt.Sprintf("读取响应失败: %v", err),
+				Status:        "failed",
+			})
+		}
 		return "", fmt.Errorf("读取响应失败: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// 记录失败的调用
+		if client.CallLogger != nil {
+			client.CallLogger(&LLMCallInfo{
+				TraderID:      client.TraderID,
+				UserID:        client.UserID,
+				ModelProvider: string(client.Provider),
+				ModelName:     client.Model,
+				RequestTime:   requestTime,
+				ResponseTime:  time.Now(),
+				DurationMs:    time.Since(requestTime).Milliseconds(),
+				SystemPrompt:  systemPrompt,
+				UserPrompt:    userPrompt,
+				ErrorMessage:  fmt.Sprintf("API返回错误 (status %d): %s", resp.StatusCode, string(body)),
+				Status:        "failed",
+			})
+		}
 		return "", fmt.Errorf("API返回错误 (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -271,17 +348,77 @@ func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) 
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
+		// 记录失败的调用
+		if client.CallLogger != nil {
+			client.CallLogger(&LLMCallInfo{
+				TraderID:      client.TraderID,
+				UserID:        client.UserID,
+				ModelProvider: string(client.Provider),
+				ModelName:     client.Model,
+				RequestTime:   requestTime,
+				ResponseTime:  time.Now(),
+				DurationMs:    time.Since(requestTime).Milliseconds(),
+				SystemPrompt:  systemPrompt,
+				UserPrompt:    userPrompt,
+				ErrorMessage:  fmt.Sprintf("解析响应失败: %v", err),
+				Status:        "failed",
+			})
+		}
 		return "", fmt.Errorf("解析响应失败: %w", err)
 	}
 
 	if len(result.Choices) == 0 {
+		// 记录失败的调用
+		if client.CallLogger != nil {
+			client.CallLogger(&LLMCallInfo{
+				TraderID:      client.TraderID,
+				UserID:        client.UserID,
+				ModelProvider: string(client.Provider),
+				ModelName:     client.Model,
+				RequestTime:   requestTime,
+				ResponseTime:  time.Now(),
+				DurationMs:    time.Since(requestTime).Milliseconds(),
+				SystemPrompt:  systemPrompt,
+				UserPrompt:    userPrompt,
+				ErrorMessage:  "API返回空响应",
+				Status:        "failed",
+			})
+		}
 		return "", fmt.Errorf("API返回空响应")
 	}
 
-	return result.Choices[0].Message.Content, nil
+	responseContent := result.Choices[0].Message.Content
+	responseTime := time.Now()
+
+	// 记录成功的调用
+	if client.CallLogger != nil {
+		client.CallLogger(&LLMCallInfo{
+			TraderID:        client.TraderID,
+			UserID:          client.UserID,
+			ModelProvider:   string(client.Provider),
+			ModelName:       client.Model,
+			RequestTime:     requestTime,
+			ResponseTime:    responseTime,
+			DurationMs:      responseTime.Sub(requestTime).Milliseconds(),
+			InputTokens:     result.Usage.PromptTokens,
+			OutputTokens:    result.Usage.CompletionTokens,
+			TotalTokens:     result.Usage.TotalTokens,
+			SystemPrompt:    systemPrompt,
+			UserPrompt:      userPrompt,
+			ResponseContent: responseContent,
+			Status:          "success",
+		})
+	}
+
+	return responseContent, nil
 }
 
 // isRetryableError 判断错误是否可重试

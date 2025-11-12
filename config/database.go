@@ -49,6 +49,10 @@ type DatabaseInterface interface {
 	ValidateBetaCode(code string) (bool, error)
 	UseBetaCode(code, userEmail string) error
 	GetBetaCodeStats() (total, used int, err error)
+	// LLM调用记录相关方法
+	CreateLLMCall(call *LLMCallRecord) error
+	GetLLMCalls(userID string, limit, offset int, filters map[string]string) ([]*LLMCallRecord, int, error)
+	GetLLMCallByID(id int64, userID string) (*LLMCallRecord, error)
 	Close() error
 }
 
@@ -145,6 +149,29 @@ func (d *Database) createTables() error {
 			UNIQUE(user_id)
 		)`,
 
+		// LLM调用记录表
+		`CREATE TABLE IF NOT EXISTS llm_calls (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			trader_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			model_provider TEXT NOT NULL,
+			model_name TEXT NOT NULL,
+			request_time DATETIME NOT NULL,
+			response_time DATETIME,
+			duration_ms INTEGER,
+			input_tokens INTEGER DEFAULT 0,
+			output_tokens INTEGER DEFAULT 0,
+			total_tokens INTEGER DEFAULT 0,
+			system_prompt TEXT,
+			user_prompt TEXT,
+			response_content TEXT,
+			error_message TEXT,
+			status TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (trader_id) REFERENCES traders(id) ON DELETE CASCADE,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+
 		// 交易员配置表
 		`CREATE TABLE IF NOT EXISTS traders (
 			id TEXT PRIMARY KEY,
@@ -230,6 +257,12 @@ func (d *Database) createTables() error {
 			BEGIN
 				UPDATE system_config SET updated_at = CURRENT_TIMESTAMP WHERE key = NEW.key;
 			END`,
+
+		// LLM调用记录表索引
+		`CREATE INDEX IF NOT EXISTS idx_llm_calls_trader_id ON llm_calls(trader_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_calls_user_id ON llm_calls(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_calls_request_time ON llm_calls(request_time DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_calls_status ON llm_calls(status)`,
 	}
 
 	for _, query := range queries {
@@ -498,6 +531,27 @@ type UserSignalSource struct {
 	OITopURL    string    `json:"oi_top_url"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// LLMCallRecord LLM调用记录
+type LLMCallRecord struct {
+	ID              int64     `json:"id"`
+	TraderID        string    `json:"trader_id"`
+	UserID          string    `json:"user_id"`
+	ModelProvider   string    `json:"model_provider"`
+	ModelName       string    `json:"model_name"`
+	RequestTime     time.Time `json:"request_time"`
+	ResponseTime    time.Time `json:"response_time"`
+	DurationMs      int64     `json:"duration_ms"`
+	InputTokens     int       `json:"input_tokens"`
+	OutputTokens    int       `json:"output_tokens"`
+	TotalTokens     int       `json:"total_tokens"`
+	SystemPrompt    string    `json:"system_prompt"`
+	UserPrompt      string    `json:"user_prompt"`
+	ResponseContent string    `json:"response_content"`
+	ErrorMessage    string    `json:"error_message"`
+	Status          string    `json:"status"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // GenerateOTPSecret 生成OTP密钥
@@ -1270,4 +1324,123 @@ func (d *Database) decryptSensitiveData(encrypted string) string {
 	}
 
 	return decrypted
+}
+
+// CreateLLMCall 创建LLM调用记录
+func (d *Database) CreateLLMCall(call *LLMCallRecord) error {
+	_, err := d.db.Exec(`
+		INSERT INTO llm_calls (
+			trader_id, user_id, model_provider, model_name,
+			request_time, response_time, duration_ms,
+			input_tokens, output_tokens, total_tokens,
+			system_prompt, user_prompt, response_content,
+			error_message, status, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, call.TraderID, call.UserID, call.ModelProvider, call.ModelName,
+		call.RequestTime, call.ResponseTime, call.DurationMs,
+		call.InputTokens, call.OutputTokens, call.TotalTokens,
+		call.SystemPrompt, call.UserPrompt, call.ResponseContent,
+		call.ErrorMessage, call.Status, call.CreatedAt)
+	return err
+}
+
+// GetLLMCalls 获取LLM调用记录列表(分页+过滤)
+func (d *Database) GetLLMCalls(userID string, limit, offset int, filters map[string]string) ([]*LLMCallRecord, int, error) {
+	// 构建WHERE子句
+	whereClause := "WHERE user_id = ?"
+	args := []interface{}{userID}
+
+	if traderID, ok := filters["trader_id"]; ok && traderID != "" {
+		whereClause += " AND trader_id = ?"
+		args = append(args, traderID)
+	}
+
+	if status, ok := filters["status"]; ok && status != "" {
+		whereClause += " AND status = ?"
+		args = append(args, status)
+	}
+
+	if startDate, ok := filters["start_date"]; ok && startDate != "" {
+		whereClause += " AND request_time >= ?"
+		args = append(args, startDate)
+	}
+
+	if endDate, ok := filters["end_date"]; ok && endDate != "" {
+		whereClause += " AND request_time <= ?"
+		args = append(args, endDate)
+	}
+
+	// 查询总数
+	var total int
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM llm_calls %s", whereClause)
+	err := d.db.QueryRow(countQuery, args...).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("查询总数失败: %w", err)
+	}
+
+	// 查询数据（不返回大文本字段）
+	query := fmt.Sprintf(`
+		SELECT id, trader_id, user_id, model_provider, model_name,
+		       request_time, response_time, duration_ms,
+		       input_tokens, output_tokens, total_tokens,
+		       status, created_at
+		FROM llm_calls %s
+		ORDER BY request_time DESC
+		LIMIT ? OFFSET ?
+	`, whereClause)
+
+	args = append(args, limit, offset)
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("查询记录失败: %w", err)
+	}
+	defer rows.Close()
+
+	// 初始化为空数组而不是nil，这样JSON序列化时会返回[]而不是null
+	records := make([]*LLMCallRecord, 0)
+	for rows.Next() {
+		var record LLMCallRecord
+		err := rows.Scan(
+			&record.ID, &record.TraderID, &record.UserID,
+			&record.ModelProvider, &record.ModelName,
+			&record.RequestTime, &record.ResponseTime, &record.DurationMs,
+			&record.InputTokens, &record.OutputTokens, &record.TotalTokens,
+			&record.Status, &record.CreatedAt,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("扫描记录失败: %w", err)
+		}
+		records = append(records, &record)
+	}
+
+	return records, total, nil
+}
+
+// GetLLMCallByID 获取单条LLM调用记录详情
+func (d *Database) GetLLMCallByID(id int64, userID string) (*LLMCallRecord, error) {
+	var record LLMCallRecord
+	err := d.db.QueryRow(`
+		SELECT id, trader_id, user_id, model_provider, model_name,
+		       request_time, response_time, duration_ms,
+		       input_tokens, output_tokens, total_tokens,
+		       system_prompt, user_prompt, response_content,
+		       error_message, status, created_at
+		FROM llm_calls
+		WHERE id = ? AND user_id = ?
+	`, id, userID).Scan(
+		&record.ID, &record.TraderID, &record.UserID,
+		&record.ModelProvider, &record.ModelName,
+		&record.RequestTime, &record.ResponseTime, &record.DurationMs,
+		&record.InputTokens, &record.OutputTokens, &record.TotalTokens,
+		&record.SystemPrompt, &record.UserPrompt, &record.ResponseContent,
+		&record.ErrorMessage, &record.Status, &record.CreatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("记录不存在")
+		}
+		return nil, fmt.Errorf("查询记录失败: %w", err)
+	}
+
+	return &record, nil
 }

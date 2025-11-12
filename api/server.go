@@ -154,6 +154,11 @@ func (s *Server) setupRoutes() {
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
 			protected.GET("/statistics", s.handleStatistics)
 			protected.GET("/performance", s.handlePerformance)
+
+			// LLM调用记录
+			protected.GET("/llm-calls", s.handleGetLLMCalls)
+			protected.GET("/llm-calls/:id", s.handleGetLLMCallByID)
+			protected.GET("/llm-calls/stats", s.handleGetLLMCallStats)
 		}
 	}
 }
@@ -2345,4 +2350,153 @@ func (s *Server) reloadPromptTemplatesWithLog(templateName string) {
 	} else {
 		log.Printf("✓ 已重新加载系统提示词模板 [当前使用: %s]", templateName)
 	}
+}
+
+// handleGetLLMCalls 获取LLM调用记录列表
+func (s *Server) handleGetLLMCalls(c *gin.Context) {
+	// 从context获取用户ID（通过认证中间件设置）
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权"})
+		return
+	}
+
+	// 解析查询参数
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	traderID := c.Query("trader_id")
+	status := c.Query("status")
+	modelProvider := c.Query("model_provider")
+
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	// 构建过滤条件
+	filters := map[string]string{}
+	if traderID != "" {
+		filters["trader_id"] = traderID
+	}
+	if status != "" {
+		filters["status"] = status
+	}
+	if modelProvider != "" {
+		filters["model_provider"] = modelProvider
+	}
+
+	// 计算offset
+	offset := (page - 1) * pageSize
+
+	// 查询数据库
+	records, total, err := s.database.GetLLMCalls(userID.(string), pageSize, offset, filters)
+	if err != nil {
+		log.Printf("❌ 获取LLM调用记录失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取记录失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"records":   records,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+// handleGetLLMCallByID 获取单个LLM调用记录详情
+func (s *Server) handleGetLLMCallByID(c *gin.Context) {
+	// 从context获取用户ID
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权"})
+		return
+	}
+
+	// 获取记录ID
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的ID"})
+		return
+	}
+
+	// 查询记录（GetLLMCallByID会验证userID）
+	record, err := s.database.GetLLMCallByID(id, userID.(string))
+	if err != nil {
+		log.Printf("❌ 获取LLM调用记录详情失败: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在或无权访问"})
+		return
+	}
+
+	c.JSON(http.StatusOK, record)
+}
+
+// handleGetLLMCallStats 获取LLM调用统计信息
+func (s *Server) handleGetLLMCallStats(c *gin.Context) {
+	// 从context获取用户ID
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权"})
+		return
+	}
+
+	// 解析查询参数
+	traderID := c.Query("trader_id")
+
+	// 构建过滤条件
+	filters := map[string]string{}
+	if traderID != "" {
+		filters["trader_id"] = traderID
+	}
+
+	// 查询所有记录（不分页，用于统计）
+	records, _, err := s.database.GetLLMCalls(userID.(string), 10000, 0, filters)
+	if err != nil {
+		log.Printf("❌ 获取LLM调用记录失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取统计失败"})
+		return
+	}
+
+	// 计算统计数据
+	stats := map[string]interface{}{
+		"total_calls":    len(records),
+		"success_calls":  0,
+		"failed_calls":   0,
+		"total_tokens":   0,
+		"input_tokens":   0,
+		"output_tokens":  0,
+		"avg_duration_ms": 0,
+		"by_provider":    make(map[string]int),
+		"by_model":       make(map[string]int),
+	}
+
+	var totalDuration int64
+	byProvider := make(map[string]int)
+	byModel := make(map[string]int)
+
+	for _, record := range records {
+		if record.Status == "success" {
+			stats["success_calls"] = stats["success_calls"].(int) + 1
+		} else {
+			stats["failed_calls"] = stats["failed_calls"].(int) + 1
+		}
+
+		stats["total_tokens"] = stats["total_tokens"].(int) + record.TotalTokens
+		stats["input_tokens"] = stats["input_tokens"].(int) + record.InputTokens
+		stats["output_tokens"] = stats["output_tokens"].(int) + record.OutputTokens
+		totalDuration += record.DurationMs
+
+		byProvider[record.ModelProvider]++
+		byModel[record.ModelName]++
+	}
+
+	if len(records) > 0 {
+		stats["avg_duration_ms"] = totalDuration / int64(len(records))
+	}
+	stats["by_provider"] = byProvider
+	stats["by_model"] = byModel
+
+	c.JSON(http.StatusOK, stats)
 }
